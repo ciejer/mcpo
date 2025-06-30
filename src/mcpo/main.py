@@ -395,17 +395,17 @@ async def run(
                                 response_model_exclude_none=sub_route.response_model_exclude_none,
                                 dependencies=sub_route.dependencies,
                             )
-                elif hasattr(route, 'path') and hasattr(route, 'methods'):
-                    all_tools_app.add_api_route(
-                        path=f"/{server_name}{route.path}",
-                        endpoint=route.endpoint,
-                        methods=route.methods,
-                        summary=f"{server_name.replace('_', ' ').title()} {route.summary}" if hasattr(route, 'summary') else f"{server_name.replace('_', ' ').title()} {route.path.replace('/', '').replace('_', ' ').title()}",
-                        description=route.description,
-                        response_model=route.response_model,
-                        response_model_exclude_none=route.response_model_exclude_none,
-                        dependencies=route.dependencies,
-                    )
+                # elif hasattr(route, 'path') and hasattr(route, 'methods'):
+                #     all_tools_app.add_api_route(
+                #         path=f"/{server_name}{route.path}",
+                #         endpoint=route.endpoint,
+                #         methods=route.methods,
+                #         summary=f"{server_name.replace('_', ' ').title()} {route.summary}" if hasattr(route, 'summary') else f"{server_name.replace('_', ' ').title()} {route.path.replace('/', '').replace('_', ' ').title()}",
+                #         description=route.description,
+                #         response_model=route.response_model,
+                #         response_model_exclude_none=route.response_model_exclude_none,
+                #         dependencies=route.dependencies,
+                #     )
 
         main_app.mount(f"{path_prefix}all_tools", all_tools_app)
         main_app.description += f"\n    - [all_tools](/all_tools/docs)"
