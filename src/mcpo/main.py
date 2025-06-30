@@ -303,63 +303,179 @@ async def run(
             if whitelist:
                 logger.info(f"    -> Whitelisted tools: {', '.join(whitelist)}")
 
-        main_app.description += "\n\n- **available tools**："
-        for server_name, server_cfg in mcp_servers.items():
-            sub_app = FastAPI(
-                title=f"{server_name}",
-                description=f"{server_name} MCP Server\n\n- [back to tool list](/docs)",
-                version="1.0",
-                lifespan=lifespan,
-            )
+        # Consolidate all whitelisted endpoints into a single sub-app
+        all_tools_app = FastAPI(
+            title="All Tools",
+            description="All MCP tools consolidated into a single API.",
+            version="1.0",
+            lifespan=lifespan,
+        )
+        all_tools_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_allow_origins or ["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        if api_key and strict_auth:
+            all_tools_app.add_middleware(APIKeyMiddleware, api_key=api_key)
+        all_tools_app.state.api_dependency = api_dependency
+        # Store all server configs for use in endpoint creation
+        all_tools_app.state.mcp_servers = mcp_servers
+        all_tools_app.state.cors_allow_origins = cors_allow_origins
+        all_tools_app.state.api_key = api_key
+        all_tools_app.state.strict_auth = strict_auth
+        all_tools_app.state.env = os.environ.copy()
+        all_tools_app.state.headers = headers
+        all_tools_app.state.path_prefix = path_prefix
 
-            sub_app.add_middleware(
-                CORSMiddleware,
-                allow_origins=cors_allow_origins or ["*"],
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
-
-            if server_cfg.get("command"):
-                # stdio
-                sub_app.state.server_type = "stdio"
-                sub_app.state.command = server_cfg["command"]
-                sub_app.state.args = server_cfg.get("args", [])
-                sub_app.state.env = {**os.environ, **server_cfg.get("env", {})}
-
-            server_config_type = server_cfg.get("type")
-            if server_config_type == "sse" and server_cfg.get("url"):
-                sub_app.state.server_type = "sse"
-                sub_app.state.args = server_cfg["url"]
-                sub_app.state.headers = server_cfg.get("headers")
-            elif (
-                server_config_type == "streamablehttp"
-                or server_config_type == "streamable_http"
-            ) and server_cfg.get("url"):
-                # Store the URL with trailing slash to avoid redirects
-                url = server_cfg["url"]
-                if not url.endswith("/"):
-                    url = f"{url}/"
-                sub_app.state.server_type = "streamablehttp"
-                sub_app.state.args = url
-                sub_app.state.headers = server_cfg.get("headers")
-
-            elif not server_config_type and server_cfg.get(
-                "url"
-            ):  # Fallback for old SSE config
-                sub_app.state.server_type = "sse"
-                sub_app.state.args = server_cfg["url"]
-                sub_app.state.headers = server_cfg.get("headers")
-
-            # Add middleware to protect also documentation and spec
-            if api_key and strict_auth:
-                sub_app.add_middleware(APIKeyMiddleware, api_key=api_key)
-
-            sub_app.state.api_dependency = api_dependency
-            sub_app.state.whitelist = server_cfg.get("whitelist")
-
-            main_app.mount(f"{path_prefix}{server_name}", sub_app)
-            main_app.description += f"\n    - [{server_name}](/{server_name}/docs)"
+        # Dynamically create endpoints for all whitelisted tools
+        async def create_all_tools_endpoints(app: FastAPI, api_dependency=None):
+            from functools import partial
+            # For each server, connect and list tools, then add endpoints
+            for server_name, server_cfg in mcp_servers.items():
+                whitelist = server_cfg.get("whitelist")
+                server_type = server_cfg.get("type")
+                # Setup connection params
+                if server_cfg.get("command"):
+                    # stdio
+                    server_params = StdioServerParameters(
+                        command=server_cfg["command"],
+                        args=server_cfg.get("args", []),
+                        env={**os.environ, **server_cfg.get("env", {})},
+                    )
+                    async with stdio_client(server_params) as (reader, writer):
+                        async with ClientSession(reader, writer) as session:
+                            tools_result = await session.list_tools()
+                            tools = tools_result.tools
+                            for tool in tools:
+                                if whitelist and tool.name not in whitelist:
+                                    continue
+                                endpoint_name = f"{tool.name}_{tool.name}"  # fallback if no endpoint name
+                                # Use tool.name as endpoint name for now
+                                endpoint_name = f"{tool.name}_{tool.name}" if hasattr(tool, 'name') else tool.name
+                                endpoint_description = tool.description
+                                inputSchema = tool.inputSchema
+                                outputSchema = getattr(tool, "outputSchema", None)
+                                form_model_fields = get_model_fields(
+                                    f"{endpoint_name}_form_model",
+                                    inputSchema.get("properties", {}),
+                                    inputSchema.get("required", []),
+                                    inputSchema.get("$defs", {}),
+                                )
+                                response_model_fields = None
+                                if outputSchema:
+                                    response_model_fields = get_model_fields(
+                                        f"{endpoint_name}_response_model",
+                                        outputSchema.get("properties", {}),
+                                        outputSchema.get("required", []),
+                                        outputSchema.get("$defs", {}),
+                                    )
+                                tool_handler = get_tool_handler(
+                                    session,
+                                    tool.name,
+                                    form_model_fields,
+                                    response_model_fields,
+                                )
+                                app.post(
+                                    f"/{tool.name}_{tool.name}",
+                                    summary=endpoint_name.replace("_", " ").title(),
+                                    description=endpoint_description,
+                                    response_model_exclude_none=True,
+                                    dependencies=[Depends(api_dependency)] if api_dependency else [],
+                                )(tool_handler)
+                elif server_type == "sse" and server_cfg.get("url"):
+                    async with sse_client(
+                        url=server_cfg["url"], sse_read_timeout=None, headers=server_cfg.get("headers")
+                    ) as (reader, writer):
+                        async with ClientSession(reader, writer) as session:
+                            tools_result = await session.list_tools()
+                            tools = tools_result.tools
+                            for tool in tools:
+                                if whitelist and tool.name not in whitelist:
+                                    continue
+                                endpoint_name = f"{tool.name}_{tool.name}"
+                                endpoint_description = tool.description
+                                inputSchema = tool.inputSchema
+                                outputSchema = getattr(tool, "outputSchema", None)
+                                form_model_fields = get_model_fields(
+                                    f"{endpoint_name}_form_model",
+                                    inputSchema.get("properties", {}),
+                                    inputSchema.get("required", []),
+                                    inputSchema.get("$defs", {}),
+                                )
+                                response_model_fields = None
+                                if outputSchema:
+                                    response_model_fields = get_model_fields(
+                                        f"{endpoint_name}_response_model",
+                                        outputSchema.get("properties", {}),
+                                        outputSchema.get("required", []),
+                                        outputSchema.get("$defs", {}),
+                                    )
+                                tool_handler = get_tool_handler(
+                                    session,
+                                    tool.name,
+                                    form_model_fields,
+                                    response_model_fields,
+                                )
+                                app.post(
+                                    f"/{tool.name}_{tool.name}",
+                                    summary=endpoint_name.replace("_", " ").title(),
+                                    description=endpoint_description,
+                                    response_model_exclude_none=True,
+                                    dependencies=[Depends(api_dependency)] if api_dependency else [],
+                                )(tool_handler)
+                elif (server_type == "streamablehttp" or server_type == "streamable_http") and server_cfg.get("url"):
+                    url = server_cfg["url"]
+                    if not url.endswith("/"):
+                        url = f"{url}/"
+                    async with streamablehttp_client(url=url, headers=server_cfg.get("headers")) as (
+                        reader,
+                        writer,
+                        _,
+                    ):
+                        async with ClientSession(reader, writer) as session:
+                            tools_result = await session.list_tools()
+                            tools = tools_result.tools
+                            for tool in tools:
+                                if whitelist and tool.name not in whitelist:
+                                    continue
+                                endpoint_name = f"{tool.name}_{tool.name}"
+                                endpoint_description = tool.description
+                                inputSchema = tool.inputSchema
+                                outputSchema = getattr(tool, "outputSchema", None)
+                                form_model_fields = get_model_fields(
+                                    f"{endpoint_name}_form_model",
+                                    inputSchema.get("properties", {}),
+                                    inputSchema.get("required", []),
+                                    inputSchema.get("$defs", {}),
+                                )
+                                response_model_fields = None
+                                if outputSchema:
+                                    response_model_fields = get_model_fields(
+                                        f"{endpoint_name}_response_model",
+                                        outputSchema.get("properties", {}),
+                                        outputSchema.get("required", []),
+                                        outputSchema.get("$defs", {}),
+                                    )
+                                tool_handler = get_tool_handler(
+                                    session,
+                                    tool.name,
+                                    form_model_fields,
+                                    response_model_fields,
+                                )
+                                app.post(
+                                    f"/{tool.name}_{tool.name}",
+                                    summary=endpoint_name.replace("_", " ").title(),
+                                    description=endpoint_description,
+                                    response_model_exclude_none=True,
+                                    dependencies=[Depends(api_dependency)] if api_dependency else [],
+                                )(tool_handler)
+        # Actually create the endpoints
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(create_all_tools_endpoints(all_tools_app, api_dependency=api_dependency))
+        main_app.mount(f"{path_prefix}all_tools", all_tools_app)
+        main_app.description += f"\n    - [all_tools](/all_tools/docs)"
     else:
         logger.error("MCPO server_command or config_path must be provided.")
         raise ValueError("You must provide either server_command or config.")
