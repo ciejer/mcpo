@@ -14,7 +14,6 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from starlette.routing import Mount
-from fastapi.routing import APIRoute
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +22,20 @@ from mcpo.utils.main import get_model_fields, get_tool_handler
 from mcpo.utils.auth import get_verify_api_key, APIKeyMiddleware
 
 
-async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
-    session: ClientSession = app.state.session
+async def create_dynamic_endpoints(
+    app: FastAPI,
+    api_dependency=None,
+    session: Optional[ClientSession] = None,
+    endpoint_prefix: str = "",
+    whitelist: Optional[list[str]] = None,
+):
+    session = session or app.state.session
     if not session:
         raise ValueError("Session is not initialized in the app state.")
 
     result = await session.initialize()
     server_info = getattr(result, "serverInfo", None)
-    if server_info:
+    if server_info and not endpoint_prefix:
         app.title = server_info.name or app.title
         app.description = (
             f"{server_info.name} MCP Server" if server_info.name else app.description
@@ -38,19 +43,21 @@ async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
         app.version = server_info.version or app.version
 
     instructions = getattr(result, "instructions", None)
-    if instructions:
+    if instructions and not endpoint_prefix:
         app.description = instructions
 
     tools_result = await session.list_tools()
     tools = tools_result.tools
 
-    whitelist = getattr(app.state, "whitelist", None)
+    current_whitelist = (
+        whitelist if whitelist is not None else getattr(app.state, "whitelist", None)
+    )
 
     for tool in tools:
-        if whitelist and tool.name not in whitelist:
+        if current_whitelist and tool.name not in current_whitelist:
             continue
 
-        endpoint_name = tool.name
+        endpoint_name = f"{endpoint_prefix}_{tool.name}" if endpoint_prefix else tool.name
         endpoint_description = tool.description
 
         inputSchema = tool.inputSchema
@@ -74,7 +81,7 @@ async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
 
         tool_handler = get_tool_handler(
             session,
-            endpoint_name,
+            tool.name,
             form_model_fields,
             response_model_fields,
         )
@@ -85,6 +92,7 @@ async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
             description=endpoint_description,
             response_model_exclude_none=True,
             dependencies=[Depends(api_dependency)] if api_dependency else [],
+            tags=[endpoint_prefix] if endpoint_prefix else [],
         )(tool_handler)
 
 
@@ -152,6 +160,67 @@ async def lifespan(app: FastAPI):
                     app.state.session = session
                     await create_dynamic_endpoints(app, api_dependency=api_dependency)
                     yield
+
+
+@asynccontextmanager
+async def consolidated_lifespan(app: FastAPI):
+    config_path = app.state.config_path
+    api_dependency = app.state.api_dependency
+
+    with open(config_path, "r") as f:
+        config_data = json.load(f)
+    mcp_servers = config_data.get("mcpServers", {})
+
+    async with AsyncExitStack() as stack:
+        for server_name, server_cfg in mcp_servers.items():
+            session = None
+            server_type = server_cfg.get("type")
+
+            if not server_type:
+                if server_cfg.get("command"):
+                    server_type = "stdio"
+                elif server_cfg.get("url"):
+                    server_type = "sse"
+
+            if server_type == "stdio":
+                server_params = StdioServerParameters(
+                    command=server_cfg["command"],
+                    args=server_cfg.get("args", []),
+                    env={**os.environ, **server_cfg.get("env", {})},
+                )
+                reader, writer = await stack.enter_async_context(
+                    stdio_client(server_params)
+                )
+                session = await stack.enter_async_context(ClientSession(reader, writer))
+
+            elif server_type == "sse":
+                url = server_cfg["url"]
+                headers = server_cfg.get("headers")
+                reader, writer = await stack.enter_async_context(
+                    sse_client(url=url, sse_read_timeout=None, headers=headers)
+                )
+                session = await stack.enter_async_context(ClientSession(reader, writer))
+
+            elif server_type in ["streamablehttp", "streamable_http"]:
+                url = server_cfg["url"]
+                if not url.endswith("/"):
+                    url = f"{url}/"
+                headers = server_cfg.get("headers")
+                reader, writer, _ = await stack.enter_async_context(
+                    streamablehttp_client(url=url, headers=headers)
+                )
+                session = await stack.enter_async_context(ClientSession(reader, writer))
+
+            if session:
+                whitelist = server_cfg.get("whitelist")
+                await create_dynamic_endpoints(
+                    app,
+                    api_dependency=api_dependency,
+                    session=session,
+                    endpoint_prefix=server_name,
+                    whitelist=whitelist,
+                )
+    yield
 
 
 async def run(
@@ -271,7 +340,7 @@ async def run(
         for server_name_cfg, server_cfg_details in mcp_servers.items():
             if server_cfg_details.get("command"):
                 args_info = (
-                    f" with args: {server_cfg_details['command']}"
+                    f" with args: {server_cfg_details['args']}"
                     if server_cfg_details.get("args")
                     else ""
                 )
@@ -304,12 +373,11 @@ async def run(
             if whitelist:
                 logger.info(f"    -> Whitelisted tools: {', '.join(whitelist)}")
 
-        # Create a single sub_app for all tools
         all_tools_app = FastAPI(
             title="All Tools Consolidated",
-            description="Consolidated API for all MCP tools",
+            description="Consolidated API for all MCP tools from config.",
             version="1.0",
-            lifespan=lifespan,
+            lifespan=consolidated_lifespan,
         )
 
         all_tools_app.add_middleware(
@@ -323,72 +391,11 @@ async def run(
         if api_key and strict_auth:
             all_tools_app.add_middleware(APIKeyMiddleware, api_key=api_key)
 
-        main_app.description += "\n\n- **available tools**："
-        for server_name, server_cfg in mcp_servers.items():
-            sub_app = FastAPI(
-                title=f"{server_name}",
-                description=f"{server_name} MCP Server\n\n- [back to tool list](/docs)",
-                version="1.0",
-                lifespan=lifespan,
-            )
-
-            sub_app.add_middleware(
-                CORSMiddleware,
-                allow_origins=cors_allow_origins or ["*"],
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
-
-            if server_cfg.get("command"):
-                # stdio
-                sub_app.state.server_type = "stdio"
-                sub_app.state.command = server_cfg["command"]
-                sub_app.state.args = server_cfg.get("args", [])
-                sub_app.state.env = {**os.environ, **server_cfg.get("env", {})}
-
-            server_config_type = server_cfg.get("type")
-            if server_config_type == "sse" and server_cfg.get("url"):
-                sub_app.state.server_type = "sse"
-                sub_app.state.args = server_cfg["url"]
-                sub_app.state.headers = server_cfg.get("headers")
-            elif (
-                server_config_type == "streamablehttp"
-                or server_config_type == "streamable_http"
-            ) and server_cfg.get("url"):
-                # Store the URL with trailing slash to avoid redirects
-                url = server_cfg["url"]
-                if not url.endswith("/"):
-                    url = f"{url}/"
-                sub_app.state.server_type = "streamablehttp"
-                sub_app.state.args = url
-                sub_app.state.headers = server_cfg.get("headers")
-
-            elif not server_config_type and server_cfg.get(
-                "url"
-            ):  # Fallback for old SSE config
-                sub_app.state.server_type = "sse"
-                sub_app.state.args = server_cfg["url"]
-                sub_app.state.headers = server_cfg.get("headers")
-
-            # Add middleware to protect also documentation and spec
-            if api_key and strict_auth:
-                sub_app.add_middleware(APIKeyMiddleware, api_key=api_key)
-
-            sub_app.state.api_dependency = api_dependency
-            sub_app.state.whitelist = server_cfg.get("whitelist")
-
-            # Mount each sub_app to the all_tools_app
-            # all_tools_app.mount(f"/{server_name}", sub_app)
-            # Instead of mounting the sub_app, we'll add its routes to all_tools_app
-            for route in sub_app.routes:
-                if isinstance(route, APIRoute):
-                    # Modify the path to include the server_name prefix
-                    route.path = f"/{server_name}{{tool_path}}"
-                    # Add the route to the all_tools_app
-                    all_tools_app.routes.append(route)
+        all_tools_app.state.config_path = config_path
+        all_tools_app.state.api_dependency = api_dependency
 
         main_app.mount(f"{path_prefix}all_tools", all_tools_app)
+        main_app.description += "\n\n- **available tools**："
         main_app.description += f"\n    - [all_tools](/all_tools/docs)"
     else:
         logger.error("MCPO server_command or config_path must be provided.")
