@@ -22,6 +22,14 @@ from mcpo.utils.main import get_model_fields, get_tool_handler
 from mcpo.utils.auth import get_verify_api_key, APIKeyMiddleware
 
 
+def _create_tool_handler_for_session(session, tool_name, form_model, response_model):
+    """
+    Helper function to create a tool handler with a specific session captured in a closure.
+    This avoids the common issue of closures in a loop capturing the last value of the loop variable.
+    """
+    return get_tool_handler(session, tool_name, form_model, response_model)
+
+
 async def create_dynamic_endpoints(
     app: FastAPI,
     api_dependency=None,
@@ -79,7 +87,7 @@ async def create_dynamic_endpoints(
                 outputSchema.get("$defs", {}),
             )
 
-        tool_handler = get_tool_handler(
+        tool_handler = _create_tool_handler_for_session(
             session,
             tool.name,
             form_model_fields,
