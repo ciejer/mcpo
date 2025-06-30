@@ -308,7 +308,6 @@ async def run(
             title="All Tools",
             description="All MCP tools consolidated into a single API.",
             version="1.0",
-            lifespan=lifespan,
         )
         all_tools_app.add_middleware(
             CORSMiddleware,
@@ -320,7 +319,6 @@ async def run(
         if api_key and strict_auth:
             all_tools_app.add_middleware(APIKeyMiddleware, api_key=api_key)
         all_tools_app.state.api_dependency = api_dependency
-        # Store all server configs for use in endpoint creation
         all_tools_app.state.mcp_servers = mcp_servers
         all_tools_app.state.cors_allow_origins = cors_allow_origins
         all_tools_app.state.api_key = api_key
@@ -329,16 +327,13 @@ async def run(
         all_tools_app.state.headers = headers
         all_tools_app.state.path_prefix = path_prefix
 
-        # Dynamically create endpoints for all whitelisted tools
-        async def create_all_tools_endpoints(app: FastAPI, api_dependency=None):
-            from functools import partial
-            # For each server, connect and list tools, then add endpoints
+        @asynccontextmanager
+        async def all_tools_lifespan(app: FastAPI):
+            from mcpo.utils.main import get_model_fields, get_tool_handler
             for server_name, server_cfg in mcp_servers.items():
                 whitelist = server_cfg.get("whitelist")
                 server_type = server_cfg.get("type")
-                # Setup connection params
                 if server_cfg.get("command"):
-                    # stdio
                     server_params = StdioServerParameters(
                         command=server_cfg["command"],
                         args=server_cfg.get("args", []),
@@ -351,9 +346,7 @@ async def run(
                             for tool in tools:
                                 if whitelist and tool.name not in whitelist:
                                     continue
-                                endpoint_name = f"{tool.name}_{tool.name}"  # fallback if no endpoint name
-                                # Use tool.name as endpoint name for now
-                                endpoint_name = f"{tool.name}_{tool.name}" if hasattr(tool, 'name') else tool.name
+                                endpoint_name = f"{server_name}_{tool.name}"
                                 endpoint_description = tool.description
                                 inputSchema = tool.inputSchema
                                 outputSchema = getattr(tool, "outputSchema", None)
@@ -377,8 +370,8 @@ async def run(
                                     form_model_fields,
                                     response_model_fields,
                                 )
-                                app.post(
-                                    f"/{tool.name}_{tool.name}",
+                                all_tools_app.post(
+                                    f"/{endpoint_name}",
                                     summary=endpoint_name.replace("_", " ").title(),
                                     description=endpoint_description,
                                     response_model_exclude_none=True,
@@ -394,7 +387,7 @@ async def run(
                             for tool in tools:
                                 if whitelist and tool.name not in whitelist:
                                     continue
-                                endpoint_name = f"{tool.name}_{tool.name}"
+                                endpoint_name = f"{server_name}_{tool.name}"
                                 endpoint_description = tool.description
                                 inputSchema = tool.inputSchema
                                 outputSchema = getattr(tool, "outputSchema", None)
@@ -418,8 +411,8 @@ async def run(
                                     form_model_fields,
                                     response_model_fields,
                                 )
-                                app.post(
-                                    f"/{tool.name}_{tool.name}",
+                                all_tools_app.post(
+                                    f"/{endpoint_name}",
                                     summary=endpoint_name.replace("_", " ").title(),
                                     description=endpoint_description,
                                     response_model_exclude_none=True,
@@ -440,7 +433,7 @@ async def run(
                             for tool in tools:
                                 if whitelist and tool.name not in whitelist:
                                     continue
-                                endpoint_name = f"{tool.name}_{tool.name}"
+                                endpoint_name = f"{server_name}_{tool.name}"
                                 endpoint_description = tool.description
                                 inputSchema = tool.inputSchema
                                 outputSchema = getattr(tool, "outputSchema", None)
@@ -464,16 +457,16 @@ async def run(
                                     form_model_fields,
                                     response_model_fields,
                                 )
-                                app.post(
-                                    f"/{tool.name}_{tool.name}",
+                                all_tools_app.post(
+                                    f"/{endpoint_name}",
                                     summary=endpoint_name.replace("_", " ").title(),
                                     description=endpoint_description,
                                     response_model_exclude_none=True,
                                     dependencies=[Depends(api_dependency)] if api_dependency else [],
                                 )(tool_handler)
-        # Actually create the endpoints
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(create_all_tools_endpoints(all_tools_app, api_dependency=api_dependency))
+            yield
+
+        all_tools_app.router.lifespan_context = all_tools_lifespan
         main_app.mount(f"{path_prefix}all_tools", all_tools_app)
         main_app.description += f"\n    - [all_tools](/all_tools/docs)"
     else:
