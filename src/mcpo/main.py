@@ -14,6 +14,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from starlette.routing import Mount
+from fastapi.routing import APIRoute
 
 logger = logging.getLogger(__name__)
 
@@ -379,33 +380,13 @@ async def run(
 
             # Mount each sub_app to the all_tools_app
             # all_tools_app.mount(f"/{server_name}", sub_app)
-            # Instead of mounting the sub_app, we'll add its routes directly to all_tools_app
+            # Instead of mounting the sub_app, we'll add its routes to all_tools_app
             for route in sub_app.routes:
-                if isinstance(route, Mount):
-                    # If it's a Mount, we need to iterate its sub-routes
-                    for sub_route in route.app.routes:
-                        if hasattr(sub_route, 'path') and hasattr(sub_route, 'methods'):
-                            all_tools_app.add_api_route(
-                                path=f"/{server_name}{sub_route.path}",
-                                endpoint=sub_route.endpoint,
-                                methods=sub_route.methods,
-                                summary=f"{server_name.replace('_', ' ').title()} {sub_route.summary}" if hasattr(sub_route, 'summary') else f"{server_name.replace('_', ' ').title()} {sub_route.path.replace('/', '').replace('_', ' ').title()}",
-                                description=sub_route.description,
-                                response_model=sub_route.response_model,
-                                response_model_exclude_none=sub_route.response_model_exclude_none,
-                                dependencies=sub_route.dependencies,
-                            )
-                # elif hasattr(route, 'path') and hasattr(route, 'methods'):
-                #     all_tools_app.add_api_route(
-                #         path=f"/{server_name}{route.path}",
-                #         endpoint=route.endpoint,
-                #         methods=route.methods,
-                #         summary=f"{server_name.replace('_', ' ').title()} {route.summary}" if hasattr(route, 'summary') else f"{server_name.replace('_', ' ').title()} {route.path.replace('/', '').replace('_', ' ').title()}",
-                #         description=route.description,
-                #         response_model=route.response_model,
-                #         response_model_exclude_none=route.response_model_exclude_none,
-                #         dependencies=route.dependencies,
-                #     )
+                if isinstance(route, APIRoute):
+                    # Modify the path to include the server_name prefix
+                    route.path = f"/{server_name}{{tool_path}}"
+                    # Add the route to the all_tools_app
+                    all_tools_app.routes.append(route)
 
         main_app.mount(f"{path_prefix}all_tools", all_tools_app)
         main_app.description += f"\n    - [all_tools](/all_tools/docs)"
