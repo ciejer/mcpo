@@ -472,8 +472,7 @@ async def run(
                                     dependencies=[Depends(api_dependency)] if api_dependency else [],
                                 )(tool_handler)
         # Actually create the endpoints
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(create_all_tools_endpoints(all_tools_app, api_dependency=api_dependency))
+        await create_all_tools_endpoints(all_tools_app, api_dependency=api_dependency)
         main_app.mount(f"{path_prefix}all_tools", all_tools_app)
         main_app.description += f"\n    - [all_tools](/all_tools/docs)"
     else:
