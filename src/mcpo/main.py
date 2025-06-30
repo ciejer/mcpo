@@ -43,7 +43,12 @@ async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
     tools_result = await session.list_tools()
     tools = tools_result.tools
 
+    whitelist = getattr(app.state, "whitelist", None)
+
     for tool in tools:
+        if whitelist and tool.name not in whitelist:
+            continue
+
         endpoint_name = tool.name
         endpoint_description = tool.description
 
@@ -294,6 +299,10 @@ async def run(
                     f"  Unknown configuration for MCP server: {server_name_cfg}"
                 )
 
+            whitelist = server_cfg_details.get("whitelist")
+            if whitelist:
+                logger.info(f"    -> Whitelisted tools: {', '.join(whitelist)}")
+
         main_app.description += "\n\n- **available tools**："
         for server_name, server_cfg in mcp_servers.items():
             sub_app = FastAPI(
@@ -347,6 +356,7 @@ async def run(
                 sub_app.add_middleware(APIKeyMiddleware, api_key=api_key)
 
             sub_app.state.api_dependency = api_dependency
+            sub_app.state.whitelist = server_cfg.get("whitelist")
 
             main_app.mount(f"{path_prefix}{server_name}", sub_app)
             main_app.description += f"\n    - [{server_name}](/{server_name}/docs)"
@@ -370,4 +380,4 @@ async def run(
     except asyncio.CancelledError:
         server.should_exit = True
         await server.shutdown()
-        raise 
+        raise
