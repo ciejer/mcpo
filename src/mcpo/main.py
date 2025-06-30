@@ -270,7 +270,7 @@ async def run(
         for server_name_cfg, server_cfg_details in mcp_servers.items():
             if server_cfg_details.get("command"):
                 args_info = (
-                    f" with args: {server_cfg_details['args']}"
+                    f" with args: {server_cfg_details['command']}"
                     if server_cfg_details.get("args")
                     else ""
                 )
@@ -302,6 +302,25 @@ async def run(
             whitelist = server_cfg_details.get("whitelist")
             if whitelist:
                 logger.info(f"    -> Whitelisted tools: {', '.join(whitelist)}")
+
+        # Create a single sub_app for all tools
+        all_tools_app = FastAPI(
+            title="All Tools Consolidated",
+            description="Consolidated API for all MCP tools",
+            version="1.0",
+            lifespan=lifespan,
+        )
+
+        all_tools_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_allow_origins or ["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        if api_key and strict_auth:
+            all_tools_app.add_middleware(APIKeyMiddleware, api_key=api_key)
 
         main_app.description += "\n\n- **available tools**："
         for server_name, server_cfg in mcp_servers.items():
@@ -358,8 +377,11 @@ async def run(
             sub_app.state.api_dependency = api_dependency
             sub_app.state.whitelist = server_cfg.get("whitelist")
 
-            main_app.mount(f"{path_prefix}{server_name}", sub_app)
-            main_app.description += f"\n    - [{server_name}](/{server_name}/docs)"
+            # Mount each sub_app to the all_tools_app
+            all_tools_app.mount(f"/{server_name}", sub_app)
+
+        main_app.mount(f"{path_prefix}all_tools", all_tools_app)
+        main_app.description += f"\n    - [all_tools](/all_tools/docs)"
     else:
         logger.error("MCPO server_command or config_path must be provided.")
         raise ValueError("You must provide either server_command or config.")
