@@ -266,26 +266,20 @@ async def mount_sse_proxy(app: FastAPI,
             proxied_name = f"{prefix}_{tool.name}" if prefix else tool.name
             description  = tool.description or ""
 
-            # create a per-tool proxy coroutine
-            async def _make_proxy(_session=session,
-                                  _orig_name=tool.name,
-                                  **kwargs):
-                return await _session.call_tool(_orig_name, kwargs)
+            async def _proxy(_session=session, _orig=tool.name, **kwargs):
+                return await _session.call_tool(_orig, kwargs)
 
-            # give the function a stable, readable name for docs / debug
-            _make_proxy = types.FunctionType(
-                _make_proxy.__code__,
-                _make_proxy.__globals__,
-                name   = proxied_name,
-                argdefs= _make_proxy.__defaults__,
-                closure= _make_proxy.__closure__,
+            # Give it a stable, readable name for docs/debug
+            _proxy = types.FunctionType(
+                _proxy.__code__,
+                _proxy.__globals__,
+                name    = proxied_name,
+                argdefs = _proxy.__defaults__,
+                closure = _proxy.__closure__,
             )
-            functools.update_wrapper(_make_proxy,
-                                     wrapped=_make_proxy,
-                                     assigned=("__doc__",))
+            _proxy.__doc__ = description        # optional
 
-            # register it on the FastMCP instance
-            proxy.tool(name=proxied_name, description=description)(_make_proxy)
+            proxy.tool(name=proxied_name, description=description)(_proxy)
 
     mcp_server: Server = proxy._mcp_server
     sse_transport      = SseServerTransport("/messages/")
