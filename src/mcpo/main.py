@@ -3,6 +3,8 @@ import os
 import logging
 import socket
 import asyncio
+import types
+import functools
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Optional
 
@@ -262,21 +264,28 @@ async def mount_sse_proxy(app: FastAPI,
         tools = (await session.list_tools()).tools
         for tool in tools:
             proxied_name = f"{prefix}_{tool.name}" if prefix else tool.name
-            input_schema  = tool.inputSchema
-            output_schema = getattr(tool, "outputSchema", None)
-            description   = tool.description or ""
+            description  = tool.description or ""
 
-            # we need a *real* coroutine object per tool
-            async def _make_proxy(_session=session, _orig=tool.name, **kwargs):
-                return await _session.call_tool(_orig, kwargs)
+            # create a per-tool proxy coroutine
+            async def _make_proxy(_session=session,
+                                  _orig_name=tool.name,
+                                  **kwargs):
+                return await _session.call_tool(_orig_name, kwargs)
 
-            proxy.add_dynamic_tool(          # FastMCP helper
-                name          = proxied_name,
-                description   = description,
-                input_schema  = input_schema,
-                output_schema = output_schema,
-                coro          = _make_proxy,
+            # give the function a stable, readable name for docs / debug
+            _make_proxy = types.FunctionType(
+                _make_proxy.__code__,
+                _make_proxy.__globals__,
+                name   = proxied_name,
+                argdefs= _make_proxy.__defaults__,
+                closure= _make_proxy.__closure__,
             )
+            functools.update_wrapper(_make_proxy,
+                                     wrapped=_make_proxy,
+                                     assigned=("__doc__",))
+
+            # register it on the FastMCP instance
+            proxy.tool(name=proxied_name, description=description)(_make_proxy)
 
     mcp_server: Server = proxy._mcp_server
     sse_transport      = SseServerTransport("/messages/")
