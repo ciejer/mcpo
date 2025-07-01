@@ -485,7 +485,7 @@ async def run(
         all_tools_app.state.api_dependency = api_dependency
         all_tools_app.state.path_prefix = path_prefix
 
-        main_app.mount(path_prefix, all_tools_app)
+        main_app.mount(f"{path_prefix}all_tools", all_tools_app)
         main_app.description += "\n\n- **available tools**："
         main_app.description += f"\n    - [docs]({path_prefix.rstrip('/')}/docs)"
     else:
