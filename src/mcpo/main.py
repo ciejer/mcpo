@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI):
                         await mount_sse_proxy(app, route_prefix="/aggregated_sse")
                         app.state.sse_proxy_mounted = True
                     yield
+                    
         if server_type == "sse":
             headers = getattr(app.state, "headers", None)
             async with sse_client(
