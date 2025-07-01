@@ -299,7 +299,7 @@ async def mount_sse_proxy(app: FastAPI,
 
     starlette_app = Starlette(
         routes=[
-            Route("", endpoint=handle_sse),
+            Route("/", endpoint=handle_sse),
             Mount("/messages", app=sse_transport.handle_post_message),
         ],
     )
