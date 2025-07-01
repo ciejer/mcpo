@@ -184,6 +184,7 @@ async def lifespan(app: FastAPI):
 async def consolidated_lifespan(app: FastAPI):
     config_path = app.state.config_path
     api_dependency = app.state.api_dependency
+    path_prefix = getattr(app.state, "path_prefix", "/")
 
     with open(config_path, "r") as f:
         config_data = json.load(f)
@@ -242,7 +243,7 @@ async def consolidated_lifespan(app: FastAPI):
                 )
         app.state.sessions = sessions
         if not getattr(app.state, "sse_proxy_mounted", False):
-            await mount_sse_proxy(app, route_prefix="/aggregated_sse")
+            await mount_sse_proxy(app, route_prefix=f"{path_prefix.rstrip('/')}/sse")
             app.state.sse_proxy_mounted = True
         yield
 
@@ -298,7 +299,7 @@ async def mount_sse_proxy(app: FastAPI,
 
     starlette_app = Starlette(
         routes=[
-            Route("/sse", endpoint=handle_sse),
+            Route("/", endpoint=handle_sse),
             Mount("/messages/", app=sse_transport.handle_post_message),
         ],
     )
@@ -308,7 +309,7 @@ async def mount_sse_proxy(app: FastAPI,
 
     # make it show up in the root OpenAPI description
     app.description += (
-        f"\n    - [aggregated_sse]({route_prefix}/sse)  "
+        f"\n    - [aggregated_sse]({route_prefix})  "
         "(MCP SSE stream of *all* tools)\n"
     )
 
@@ -482,10 +483,11 @@ async def run(
 
         all_tools_app.state.config_path = config_path
         all_tools_app.state.api_dependency = api_dependency
+        all_tools_app.state.path_prefix = path_prefix
 
-        main_app.mount(f"{path_prefix}all_tools", all_tools_app)
+        main_app.mount(path_prefix, all_tools_app)
         main_app.description += "\n\n- **available tools**："
-        main_app.description += f"\n    - [all_tools](/all_tools/docs)"
+        main_app.description += f"\n    - [docs]({path_prefix.rstrip('/')}/docs)"
     else:
         logger.error("MCPO server_command or config_path must be provided.")
         raise ValueError("You must provide either server_command or config.")
