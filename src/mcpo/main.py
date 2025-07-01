@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client, SseServerTransport
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from starlette.applications import Starlette
@@ -19,6 +19,7 @@ from starlette.routing import Route, Mount
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server import Server
+from mcp.server.sse import SseServerTransport
 
 logger = logging.getLogger(__name__)
 
