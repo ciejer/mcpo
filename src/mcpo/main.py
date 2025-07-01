@@ -279,9 +279,7 @@ async def mount_sse_proxy(app: FastAPI,
             # register on FastMCP, supplying the schemas we fetched earlier
             proxy.tool(
                 name          = proxied_name,
-                description   = description,
-                input_schema  = tool.inputSchema,
-                output_schema = getattr(tool, "outputSchema", None),
+                description   = description
             )(proxy_func)
 
     mcp_server: Server = proxy._mcp_server
