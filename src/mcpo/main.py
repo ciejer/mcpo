@@ -135,6 +135,9 @@ async def lifespan(app: FastAPI):
                 async with ClientSession(reader, writer) as session:
                     app.state.session = session
                     await create_dynamic_endpoints(app, api_dependency=api_dependency)
+                    if not getattr(app.state, "sse_proxy_mounted", False):
+                        await mount_sse_proxy(app, route_prefix="/aggregated_sse")
+                        app.state.sse_proxy_mounted = True
                     yield
         if server_type == "sse":
             headers = getattr(app.state, "headers", None)
@@ -147,6 +150,9 @@ async def lifespan(app: FastAPI):
                 async with ClientSession(reader, writer) as session:
                     app.state.session = session
                     await create_dynamic_endpoints(app, api_dependency=api_dependency)
+                    if not getattr(app.state, "sse_proxy_mounted", False):
+                        await mount_sse_proxy(app, route_prefix="/aggregated_sse")
+                        app.state.sse_proxy_mounted = True
                     yield
         if server_type == "streamablehttp" or server_type == "streamable_http":
             headers = getattr(app.state, "headers", None)
@@ -165,6 +171,9 @@ async def lifespan(app: FastAPI):
                 async with ClientSession(reader, writer) as session:
                     app.state.session = session
                     await create_dynamic_endpoints(app, api_dependency=api_dependency)
+                    if not getattr(app.state, "sse_proxy_mounted", False):
+                        await mount_sse_proxy(app, route_prefix="/aggregated_sse")
+                        app.state.sse_proxy_mounted = True
                     yield
 
 
@@ -229,6 +238,9 @@ async def consolidated_lifespan(app: FastAPI):
                     whitelist=whitelist,
                 )
         app.state.sessions = sessions
+        if not getattr(app.state, "sse_proxy_mounted", False):
+            await mount_sse_proxy(app, route_prefix="/aggregated_sse")
+            app.state.sse_proxy_mounted = True
         yield
 
 async def mount_sse_proxy(app: FastAPI,
@@ -241,8 +253,6 @@ async def mount_sse_proxy(app: FastAPI,
     """
     if not hasattr(app.state, "sessions"):
         # single-server mode -> reuse that one session with empty prefix
-        if not hasattr(app.state, "session"):
-            raise ValueError("No session found on app.state. Ensure the session is initialized before calling mount_sse_proxy.")
         app.state.sessions = [("", app.state.session)]
 
     proxy = FastMCP("aggregated-tools")
@@ -474,8 +484,6 @@ async def run(
     else:
         logger.error("MCPO server_command or config_path must be provided.")
         raise ValueError("You must provide either server_command or config.")
-    
-    await mount_sse_proxy(main_app, route_prefix=f"{path_prefix.rstrip('/')}/aggregated_sse")
 
     logger.info("Uvicorn server starting...")
     config = uvicorn.Config(
