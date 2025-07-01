@@ -241,6 +241,8 @@ async def mount_sse_proxy(app: FastAPI,
     """
     if not hasattr(app.state, "sessions"):
         # single-server mode -> reuse that one session with empty prefix
+        if not hasattr(app.state, "session"):
+            raise ValueError("No session found on app.state. Ensure the session is initialized before calling mount_sse_proxy.")
         app.state.sessions = [("", app.state.session)]
 
     proxy = FastMCP("aggregated-tools")
