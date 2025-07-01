@@ -10,10 +10,15 @@ import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
+from mcp.client.sse import sse_client, SseServerTransport
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
-from starlette.routing import Mount
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.routing import Route, Mount
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server import Server
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +218,7 @@ async def consolidated_lifespan(app: FastAPI):
                 session = await stack.enter_async_context(ClientSession(reader, writer))
 
             if session:
-                sessions.append(session)
+                sessions.append((server_name, session))
                 whitelist = server_cfg.get("whitelist")
                 await create_dynamic_endpoints(
                     app,
@@ -225,6 +230,69 @@ async def consolidated_lifespan(app: FastAPI):
         app.state.sessions = sessions
         yield
 
+async def mount_sse_proxy(app: FastAPI,
+                          *,
+                          route_prefix: str = "/aggregated_sse") -> None:
+    """
+    Build a FastMCP server that forwards calls to all
+    (prefix, session) tuples previously saved on app.state.sessions
+    and mount it under   <route_prefix>/sse   (+ the /messages/ channel).
+    """
+    if not hasattr(app.state, "sessions"):
+        # single-server mode -> reuse that one session with empty prefix
+        app.state.sessions = [("", app.state.session)]
+
+    proxy = FastMCP("aggregated-tools")
+
+    # dynamic proxy tool factory
+    for prefix, session in app.state.sessions:
+        tools = (await session.list_tools()).tools
+        for tool in tools:
+            proxied_name = f"{prefix}_{tool.name}" if prefix else tool.name
+            input_schema  = tool.inputSchema
+            output_schema = getattr(tool, "outputSchema", None)
+            description   = tool.description or ""
+
+            # we need a *real* coroutine object per tool
+            async def _make_proxy(_session=session, _orig=tool.name, **kwargs):
+                return await _session.call_tool(_orig, kwargs)
+
+            proxy.add_dynamic_tool(          # FastMCP helper
+                name          = proxied_name,
+                description   = description,
+                input_schema  = input_schema,
+                output_schema = output_schema,
+                coro          = _make_proxy,
+            )
+
+    mcp_server: Server = proxy._mcp_server
+    sse_transport      = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request):
+        async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send
+        ) as (reader, writer):
+            await mcp_server.run(
+                reader,
+                writer,
+                mcp_server.create_initialization_options(),
+            )
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ],
+    )
+
+    # FastAPI → Starlette mounting
+    app.mount(route_prefix, starlette_app)
+
+    # make it show up in the root OpenAPI description
+    app.description += (
+        f"\n    - [aggregated_sse]({route_prefix}/sse)  "
+        "(MCP SSE stream of *all* tools)\n"
+    )
 
 async def run(
     host: str = "127.0.0.1",
@@ -403,6 +471,8 @@ async def run(
     else:
         logger.error("MCPO server_command or config_path must be provided.")
         raise ValueError("You must provide either server_command or config.")
+    
+    await mount_sse_proxy(main_app, route_prefix=f"{path_prefix.rstrip('/')}/aggregated_sse")
 
     logger.info("Uvicorn server starting...")
     config = uvicorn.Config(
