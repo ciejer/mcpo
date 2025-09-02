@@ -102,11 +102,8 @@ def create_sub_app(server_name: str, server_cfg: Dict[str, Any], cors_allow_orig
                    connection_timeout, lifespan) -> FastAPI:
     """Create a sub-application for an MCP server."""
     def custom_generate_unique_id(route):
-        # Prefer the route’s explicit name; fallback to path
         base = route.name or route.path.lstrip("/").replace("/", "_")
-        # Optionally add method suffix (preserves post pattern)
-        method = next(iter(route.methods or []), "post").lower()
-        return f"{base}{method}"
+        return base
     sub_app = FastAPI(
         title=f"{server_name}",
         description=f"{server_name} MCP Server\n\n- back to tool list ",
