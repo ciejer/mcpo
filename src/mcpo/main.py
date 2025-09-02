@@ -101,16 +101,19 @@ def create_sub_app(server_name: str, server_cfg: Dict[str, Any], cors_allow_orig
                    api_key: Optional[str], strict_auth: bool, api_dependency,
                    connection_timeout, lifespan) -> FastAPI:
     """Create a sub-application for an MCP server."""
+
     def custom_generate_unique_id(route):
+        # This function generates a unique ID for each route; avoiding FastAPI's default addition of prefix/suffix.
         base = route.name or route.path.lstrip("/").replace("/", "_")
         return base
+
     sub_app = FastAPI(
         title=f"{server_name}",
-        description=f"{server_name} MCP Server\n\n- back to tool list ",
+        description=f"{server_name} MCP Server\n\n- [back to tool list](/docs)",
         version="1.0",
         lifespan=lifespan,
         generate_unique_id_function=custom_generate_unique_id,
-        )
+    )
 
     sub_app.add_middleware(
         CORSMiddleware,
