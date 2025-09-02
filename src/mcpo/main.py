@@ -101,12 +101,19 @@ def create_sub_app(server_name: str, server_cfg: Dict[str, Any], cors_allow_orig
                    api_key: Optional[str], strict_auth: bool, api_dependency,
                    connection_timeout, lifespan) -> FastAPI:
     """Create a sub-application for an MCP server."""
+    def custom_generate_unique_id(route):
+        # Prefer the route’s explicit name; fallback to path
+        base = route.name or route.path.lstrip("/").replace("/", "_")
+        # Optionally add method suffix (preserves post pattern)
+        method = next(iter(route.methods or []), "post").lower()
+        return f"{base}{method}"
     sub_app = FastAPI(
         title=f"{server_name}",
-        description=f"{server_name} MCP Server\n\n- [back to tool list](/docs)",
+        description=f"{server_name} MCP Server\n\n- back to tool list ",
         version="1.0",
         lifespan=lifespan,
-    )
+        generate_unique_id_function=custom_generate_unique_id,
+        )
 
     sub_app.add_middleware(
         CORSMiddleware,
@@ -303,6 +310,7 @@ async def create_dynamic_endpoints(app: FastAPI, api_dependency=None):
 
         app.post(
             f"/{endpoint_name}",
+            name=endpoint_name,
             summary=endpoint_name.replace("_", " ").title(),
             description=endpoint_description,
             response_model_exclude_none=True,
